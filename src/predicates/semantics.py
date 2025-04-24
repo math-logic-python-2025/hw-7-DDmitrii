@@ -149,9 +149,19 @@ class Model(Generic[T]):
             variable names.
         """
         assert term.constants().issubset(self.constant_interpretations.keys())
-        assert term.variables().issubset(assignment.keys())
+        assert term.variables().issubset(assignment.keys()), print(
+            f'variables in term are {term.variables()}, assignment includes {assignment.keys()}')
         for function, arity in term.functions():
             assert function in self.function_interpretations and self.function_arities[function] == arity
+
+        if is_constant(term.root):
+            return self.constant_interpretations[term.root]
+
+        if is_variable(term.root):
+            return assignment[term.root]
+
+        evaluated_args = tuple(self.evaluate_term(arg, assignment) for arg in term.arguments)
+        return self.function_interpretations[term.root][evaluated_args]
         # Task 7.7
 
     def evaluate_formula(self, formula: Formula, assignment: Mapping[str, T] = frozendict()) -> bool:
@@ -198,4 +208,11 @@ class Model(Generic[T]):
                 assert function in self.function_interpretations and self.function_arities[function] == arity
             for relation, arity in formula.relations():
                 assert relation in self.relation_interpretations and self.relation_arities[relation] in {-1, arity}
+
+            new_formulas = set()
+            for formula in formulas:
+                for free_variable in formula.free_variables():
+                    formula = Formula('A', free_variable, formula)
+                new_formulas.add(formula)
+            return all(self.evaluate_formula(formula) for formula in new_formulas)
         # Task 7.9

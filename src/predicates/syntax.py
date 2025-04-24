@@ -83,6 +83,52 @@ def is_function(string: str) -> bool:
     """
     return string[0] >= "f" and string[0] <= "t" and string.isalnum()
 
+def extract_enclosed_expression(text: str) -> Tuple[str, str]:
+    if not text or text[0] not in {'(', '['}:
+        raise ValueError("Expression must start with '(' or '['")
+
+    opening, closing = ('[', ']') if text[0] == '[' else ('(', ')')
+    balance = 0
+    end_pos = 0
+
+    for pos, char in enumerate(text):
+        if char == opening:
+            balance += 1
+        elif char == closing:
+            balance -= 1
+            if balance == 0:
+                end_pos = pos
+                break
+
+    if balance != 0:
+        raise ValueError("Unbalanced brackets in expression")
+
+    return text[:end_pos + 1], text[end_pos + 1:]
+
+
+def separate_function_or_relation_name(string: str) -> Tuple:
+    assert string
+    counter = 0
+    while string[counter].isalnum():
+        counter += 1
+    return string[:counter], *extract_enclosed_expression(string[counter:])
+
+
+def parse_lexical_token(string: str) -> Tuple[str, str]:
+    assert string
+    sample = string[0]
+    if sample == '_':
+        return ('_', string[1:])
+    counter = 0
+    while counter < len(string) and string[counter].isalnum():
+        counter += 1
+    if is_constant(sample) or is_variable(sample):
+        return string[:counter], string[counter:]
+
+    elif is_function(sample):
+        arguments, suffix = extract_enclosed_expression(string[counter:])
+        return string[:counter] + arguments, suffix
+
 
 @frozen
 class Term:
@@ -123,6 +169,11 @@ class Term:
         Returns:
             The standard string representation of the current term.
         """
+        if is_variable(self.root) or is_constant(self.root):
+            return self.root
+
+        args_str = ','.join(map(repr, self.arguments))
+        return f'{self.root}({args_str})'
         # Task 7.1
 
     def __eq__(self, other: object) -> bool:
@@ -166,6 +217,39 @@ class Term:
             or a variable name (e.g., ``'x12'``), then the parsed prefix will be
             that entire name (and not just a part of it, such as ``'x1'``).
         """
+        string = string.strip()
+        if not string:
+            raise ValueError("Empty string cannot be parsed as term")
+
+        first_char = string[0]
+
+        if is_variable(first_char) or is_constant(first_char):
+            term_str, remaining = parse_lexical_token(string)
+            if not term_str:
+                raise ValueError(f"Failed to parse term from: {string[:10]}...")
+            return Term(term_str), remaining
+
+        if is_function(first_char):
+            func_name, args_str, remaining = separate_function_or_relation_name(string)
+
+            if not args_str.startswith('(') or not args_str.endswith(')'):
+                raise ValueError(f"Invalid function arguments: {args_str}")
+
+            arg_contents = args_str[1:-1].strip()
+            args = []
+            while arg_contents:
+                arg, arg_contents = parse_lexical_token(arg_contents)
+                if not arg:
+                    break
+                parsed_arg, _ = Term._parse_prefix(arg)
+                args.append(parsed_arg)
+
+                if arg_contents and arg_contents[0] == ',':
+                    arg_contents = arg_contents[1:].strip()
+
+            return Term(func_name, args), remaining
+
+        raise ValueError(f"Invalid term starting with: {first_char}")
         # Task 7.3a
 
     @staticmethod
@@ -178,6 +262,12 @@ class Term:
         Returns:
             A term whose standard string representation is the given string.
         """
+        parsed_term, remaining = Term._parse_prefix(string.strip())
+        if remaining:
+            raise ValueError(f"Unexpected trailing characters after term: '{remaining}'")
+        if string != str(parsed_term):
+            raise ValueError(f"String representation mismatch. Input: '{string}', Parsed: '{parsed_term}'")
+        return parsed_term
         # Task 7.3b
 
     def constants(self) -> Set[str]:
@@ -186,6 +276,13 @@ class Term:
         Returns:
             A set of all constant names used in the current term.
         """
+        if is_constant(self.root):
+            return {self.root}
+
+        if not is_function(self.root):
+            return set()
+
+        return set().union(*(arg.constants() for arg in self.arguments))
         # Task 7.5a
 
     def variables(self) -> Set[str]:
@@ -194,6 +291,13 @@ class Term:
         Returns:
             A set of all variable names used in the current term.
         """
+        if is_variable(self.root):
+            return {self.root}
+
+        if not is_function(self.root):
+            return set()
+
+        return {var for arg in self.arguments for var in arg.variables()}
         # Task 7.5b
 
     def functions(self) -> Set[Tuple[str, int]]:
@@ -204,6 +308,15 @@ class Term:
             A set of pairs of function name and arity (number of arguments) for
             all function names used in the current term.
         """
+        if not is_function(self.root):
+            return set()
+
+        found_functions = {(self.root, len(self.arguments))}
+
+        for arg in self.arguments:
+            found_functions.update(arg.functions())
+
+        return found_functions
         # Task 7.5c
 
     def substitute(
@@ -407,6 +520,20 @@ class Formula:
         Returns:
             The standard string representation of the current formula.
         """
+        if is_equality(self.root):
+            return f"{self.arguments[0]}={self.arguments[1]}"
+
+        if is_relation(self.root):
+            args = ",".join(str(a) for a in self.arguments)
+            return f"{self.root}({args})"
+
+        if is_unary(self.root):
+            return f"{self.root}{self.first}"
+
+        if is_binary(self.root):
+            return f"({self.first}{self.root}{self.second})"
+
+        return f"{self.root}{self.variable}[{self.statement}]"
         # Task 7.2
 
     def __eq__(self, other: object) -> bool:
@@ -471,6 +598,21 @@ class Formula:
         Returns:
             A set of all constant names used in the current formula.
         """
+        root = self.root
+        if is_quantifier(root):
+            return Formula.constants(self.statement)
+
+        elif is_unary(root):
+            return Formula.constants(self.first)
+
+        elif is_binary(root):
+            return Formula.constants(self.first) | Formula.constants(self.second)
+
+        elif is_equality(root) or is_relation(root):
+            constants = set()
+            for argument in self.arguments:
+                constants = constants | Term.constants(argument)
+            return constants
         # Task 7.6a
 
     def variables(self) -> Set[str]:
@@ -479,6 +621,21 @@ class Formula:
         Returns:
             A set of all variable names used in the current formula.
         """
+        root = self.root
+        if is_quantifier(root):
+            return Formula.variables(self.statement) | {self.variable}
+
+        elif is_unary(root):
+            return Formula.variables(self.first)
+
+        elif is_binary(root):
+            return Formula.variables(self.first) | Formula.variables(self.second)
+
+        elif is_equality(root) or is_relation(root):
+            variables = set()
+            for argument in self.arguments:
+                variables = variables | Term.variables(argument)
+            return variables
         # Task 7.6b
 
     def free_variables(self) -> Set[str]:
@@ -488,6 +645,22 @@ class Formula:
             A set of every variable name that is used in the current formula not
             only within a scope of a quantification on that variable name.
         """
+        root = self.root
+        if is_quantifier(root):
+            free_variables = Formula.free_variables(self.statement) - {self.variable}
+            return free_variables
+
+        elif is_unary(root):
+            return Formula.free_variables(self.first)
+
+        elif is_binary(root):
+            return Formula.free_variables(self.first) | Formula.free_variables(self.second)
+
+        elif is_equality(root) or is_relation(root):
+            free_variables = set()
+            for argument in self.arguments:
+                free_variables = free_variables | Term.variables(argument)
+            return free_variables
         # Task 7.6c
 
     def functions(self) -> Set[Tuple[str, int]]:
