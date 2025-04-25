@@ -112,6 +112,8 @@ class Model(Generic[T]):
         self.function_interpretations = frozendict(
             {function: frozendict(function_interpretations[function]) for function in function_interpretations}
         )
+        self.formula_cache = {}
+        self.max_cache_size = 100
 
     def __repr__(self) -> str:
         """Computes a string representation of the current model.
@@ -187,6 +189,61 @@ class Model(Generic[T]):
             assert function in self.function_interpretations and self.function_arities[function] == arity
         for relation, arity in formula.relations():
             assert relation in self.relation_interpretations and self.relation_arities[relation] in {-1, arity}
+
+        key = (formula, frozenset(assignment.items()))
+        if key in self.formula_cache:
+            return self.formula_cache[key]
+
+        if len(self.formula_cache) > self.max_cache_size:
+            self.formula_cache.pop(next(iter(self.formula_cache)))
+
+        root = formula.root
+        result = None
+
+        if is_equality(root):
+            left = self.evaluate_term(formula.arguments[0], assignment)
+            right = self.evaluate_term(formula.arguments[1], assignment)
+            result = left is right
+
+        elif is_relation(root):
+            args = []
+            for arg in formula.arguments:
+                args.append(self.evaluate_term(arg, assignment))
+            result = tuple(args) in self.relation_interpretations[root]
+
+        elif is_unary(root):
+            result = not self.evaluate_formula(formula.first, assignment)
+
+        elif is_binary(root):
+            left_val = self.evaluate_formula(formula.first, assignment)
+            right_val = self.evaluate_formula(formula.second, assignment)
+
+            if root == '&':
+                result = left_val and right_val
+            elif root == '|':
+                result = left_val or right_val
+            elif root == '->':
+                result = not left_val or right_val
+            elif root == '-&':
+                result = not (left_val and right_val)
+            elif root == '-|':
+                result = not (left_val or right_val)
+            elif root == '+':
+                result = left_val != right_val
+            elif root == '<->':
+                result = left_val == right_val
+
+        elif is_quantifier(root):
+            variable = formula.variable
+            values = []
+            for value in self.universe:
+                new_assignment = assignment.copy()
+                new_assignment[variable] = value
+                values.append(self.evaluate_formula(formula.statement, new_assignment))
+            result = all(values) if root == 'A' else any(values)
+
+        self.formula_cache[key] = result
+        return result
         # Task 7.8
 
     def is_model_of(self, formulas: AbstractSet[Formula]) -> bool:
@@ -209,10 +266,13 @@ class Model(Generic[T]):
             for relation, arity in formula.relations():
                 assert relation in self.relation_interpretations and self.relation_arities[relation] in {-1, arity}
 
-            new_formulas = set()
-            for formula in formulas:
-                for free_variable in formula.free_variables():
-                    formula = Formula('A', free_variable, formula)
-                new_formulas.add(formula)
-            return all(self.evaluate_formula(formula) for formula in new_formulas)
+            universally_closed = set()
+            for original_formula in formulas:
+                processed_formula = original_formula
+
+                for var in processed_formula.free_variables():
+                    processed_formula = Formula('A', var, processed_formula)
+                universally_closed.add(processed_formula)
+
+            return all(self.evaluate_formula(f) for f in universally_closed)
         # Task 7.9
